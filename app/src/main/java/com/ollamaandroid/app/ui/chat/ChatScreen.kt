@@ -22,12 +22,16 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.ArrowDropDown
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Key
+import androidx.compose.material.icons.outlined.Psychology
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.DropdownMenu
@@ -62,10 +66,12 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.ollamaandroid.app.data.db.MessageEntity
+import com.ollamaandroid.app.data.network.ReasoningLevel
 import com.ollamaandroid.app.ui.components.MarkdownText
 import kotlinx.coroutines.launch
 
@@ -191,11 +197,14 @@ fun ChatScreen(
                 } else {
                     MessageList(
                         messages = messages,
-                        streamingContent = uiState.streaming?.content,
+                        streamingReply = uiState.streaming,
                         modifier = Modifier.weight(1f),
                     )
                     ChatInputBar(
                         isStreaming = uiState.streaming != null,
+                        supportsThinking = uiState.supportsThinking,
+                        reasoning = settings.reasoning,
+                        onSelectReasoning = { viewModel.selectReasoning(it) },
                         onSend = { viewModel.sendMessage(it) },
                         onStop = { viewModel.stopStreaming() },
                     )
@@ -264,20 +273,20 @@ private fun ModelSelector(
 @Composable
 private fun MessageList(
     messages: List<MessageEntity>,
-    streamingContent: String?,
+    streamingReply: StreamingReply?,
     modifier: Modifier = Modifier,
 ) {
     val listState = rememberLazyListState()
 
     // Follow the bottom while messages arrive or stream in.
-    LaunchedEffect(messages.size, streamingContent?.length) {
-        val itemCount = messages.size + (if (streamingContent != null) 1 else 0)
+    LaunchedEffect(messages.size, streamingReply?.content?.length, streamingReply?.thinking?.length) {
+        val itemCount = messages.size + (if (streamingReply != null) 1 else 0)
         if (itemCount > 0) {
             listState.scrollToItem(itemCount - 1)
         }
     }
 
-    if (messages.isEmpty() && streamingContent == null) {
+    if (messages.isEmpty() && streamingReply == null) {
         EmptyChatPlaceholder(modifier = modifier)
         return
     }
@@ -292,14 +301,16 @@ private fun MessageList(
             MessageBubble(
                 isUser = message.role == "user",
                 content = message.content,
+                thinking = message.thinking,
                 interrupted = message.interrupted,
             )
         }
-        if (streamingContent != null) {
+        if (streamingReply != null) {
             item(key = "streaming") {
                 MessageBubble(
                     isUser = false,
-                    content = streamingContent,
+                    content = streamingReply.content,
+                    thinking = streamingReply.thinking.ifBlank { null },
                     interrupted = false,
                     streaming = true,
                 )
@@ -312,6 +323,7 @@ private fun MessageList(
 private fun MessageBubble(
     isUser: Boolean,
     content: String,
+    thinking: String? = null,
     interrupted: Boolean,
     streaming: Boolean = false,
 ) {
@@ -334,8 +346,17 @@ private fun MessageBubble(
             modifier = Modifier.widthIn(max = 320.dp),
         ) {
             Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+                if (!thinking.isNullOrBlank()) {
+                    // Auto-expand while the model is still reasoning (no answer yet).
+                    ThinkingSection(
+                        thinking = thinking,
+                        initiallyExpanded = streaming && content.isEmpty(),
+                    )
+                }
                 if (content.isEmpty() && streaming) {
-                    ThinkingIndicator()
+                    if (thinking.isNullOrBlank()) {
+                        ThinkingIndicator()
+                    }
                 } else {
                     MarkdownText(content = content)
                 }
@@ -348,6 +369,51 @@ private fun MessageBubble(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ThinkingSection(
+    thinking: String,
+    initiallyExpanded: Boolean,
+) {
+    var expanded by rememberSaveable { mutableStateOf(initiallyExpanded) }
+
+    Column(modifier = Modifier.padding(bottom = 6.dp)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .clip(RoundedCornerShape(8.dp))
+                .clickable { expanded = !expanded }
+                .padding(vertical = 2.dp),
+        ) {
+            Icon(
+                Icons.Outlined.Psychology,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Spacer(modifier = Modifier.size(4.dp))
+            Text(
+                text = if (expanded) "Hide thinking" else "Show thinking",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Icon(
+                imageVector = if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                contentDescription = null,
+                modifier = Modifier.size(16.dp),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (expanded) {
+            Text(
+                text = thinking,
+                style = MaterialTheme.typography.bodySmall.copy(fontStyle = FontStyle.Italic),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(top = 4.dp, start = 20.dp),
+            )
         }
     }
 }
@@ -430,6 +496,9 @@ private fun OnboardingCard(onOpenSettings: () -> Unit) {
 @Composable
 private fun ChatInputBar(
     isStreaming: Boolean,
+    supportsThinking: Boolean,
+    reasoning: ReasoningLevel,
+    onSelectReasoning: (ReasoningLevel) -> Unit,
     onSend: (String) -> Unit,
     onStop: () -> Unit,
 ) {
@@ -442,6 +511,13 @@ private fun ChatInputBar(
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalAlignment = Alignment.Bottom,
         ) {
+            if (supportsThinking) {
+                ReasoningPicker(
+                    reasoning = reasoning,
+                    onSelect = onSelectReasoning,
+                )
+                Spacer(modifier = Modifier.size(4.dp))
+            }
             OutlinedTextField(
                 value = input,
                 onValueChange = { input = it },
@@ -466,6 +542,59 @@ private fun ChatInputBar(
                 Icon(
                     imageVector = if (isStreaming) Icons.Default.Stop else Icons.AutoMirrored.Filled.Send,
                     contentDescription = if (isStreaming) "Stop" else "Send",
+                )
+            }
+        }
+    }
+}
+
+/**
+ * Reasoning selector for thinking-capable models. Tinted when a non-default
+ * level is active.
+ */
+@Composable
+private fun ReasoningPicker(
+    reasoning: ReasoningLevel,
+    onSelect: (ReasoningLevel) -> Unit,
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val active = reasoning != ReasoningLevel.DEFAULT
+
+    Box {
+        IconButton(onClick = { expanded = true }, modifier = Modifier.size(48.dp)) {
+            Icon(
+                Icons.Outlined.Psychology,
+                contentDescription = "Reasoning: ${reasoning.label}",
+                tint = if (active) {
+                    MaterialTheme.colorScheme.primary
+                } else {
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                },
+            )
+        }
+        DropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
+            Text(
+                text = "Reasoning",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            )
+            ReasoningLevel.entries.forEach { level ->
+                DropdownMenuItem(
+                    text = { Text(level.label) },
+                    trailingIcon = {
+                        if (level == reasoning) {
+                            Icon(
+                                Icons.Default.Check,
+                                contentDescription = null,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    },
+                    onClick = {
+                        onSelect(level)
+                        expanded = false
+                    },
                 )
             }
         }

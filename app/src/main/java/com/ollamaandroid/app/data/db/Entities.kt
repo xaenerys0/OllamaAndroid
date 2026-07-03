@@ -32,6 +32,8 @@ data class MessageEntity(
     /** "user" or "assistant" */
     val role: String,
     val content: String,
+    /** Reasoning trace emitted by thinking-capable models; null when absent. */
+    val thinking: String? = null,
     /** Model that produced an assistant message; null for user messages. */
     val model: String? = null,
     /** True when a stream was stopped or failed before completing. */

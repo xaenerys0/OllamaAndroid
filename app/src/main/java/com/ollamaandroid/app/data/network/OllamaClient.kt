@@ -84,6 +84,24 @@ class OllamaClient {
         }
     }
 
+    /** Fetches model metadata; used to detect the `thinking` capability. */
+    suspend fun showModel(baseUrl: String, apiKey: String, model: String): ShowResponse =
+        withContext(Dispatchers.IO) {
+            val httpRequest = Request.Builder()
+                .url(apiUrl(baseUrl, "api/show"))
+                .applyAuth(apiKey)
+                .post(json.encodeToString(ShowRequest.serializer(), ShowRequest(model)).toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+
+            httpClient.newCall(httpRequest).execute().use { response ->
+                val body = response.body?.string().orEmpty()
+                if (!response.isSuccessful) {
+                    throw OllamaException(readError(response.code, body), response.code)
+                }
+                json.decodeFromString(ShowResponse.serializer(), body)
+            }
+        }
+
     private fun apiUrl(baseUrl: String, path: String): String =
         baseUrl.trim().trimEnd('/') + "/" + path
 
