@@ -12,6 +12,10 @@ Ollama server.
   navigation drawer; deleting a conversation removes its messages
 - **Model picker** — the top-bar dropdown lists the models available to your API key
   (via `GET /api/tags`) and lets you switch models per message
+- **Reasoning control** — for models that report the `thinking` capability (via
+  `POST /api/show`), a brain icon next to the message box lets you pick the reasoning level
+  (Default / Off / On / Low / Medium / High); the model's thinking trace streams into a
+  collapsible section of the reply bubble and is saved with the chat
 - **Markdown-aware rendering** — fenced code blocks (with language label and horizontal scroll),
   inline code, bold, and italics render nicely in assistant bubbles
 - **Settings** — API key (masked, stored on-device only), server URL (defaults to Ollama Cloud,

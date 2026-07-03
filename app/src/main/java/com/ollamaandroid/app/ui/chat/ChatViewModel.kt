@@ -11,6 +11,7 @@ import com.ollamaandroid.app.data.ChatRepository
 import com.ollamaandroid.app.data.SettingsRepository
 import com.ollamaandroid.app.data.db.ConversationEntity
 import com.ollamaandroid.app.data.db.MessageEntity
+import com.ollamaandroid.app.data.network.ReasoningLevel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
@@ -20,8 +21,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -30,6 +33,7 @@ import kotlinx.coroutines.launch
 data class StreamingReply(
     val conversationId: Long,
     val content: String = "",
+    val thinking: String = "",
 )
 
 data class ChatUiState(
@@ -38,6 +42,8 @@ data class ChatUiState(
     val errorMessage: String? = null,
     val availableModels: List<String> = emptyList(),
     val modelsLoading: Boolean = false,
+    /** Whether the currently selected model supports the `think` parameter. */
+    val supportsThinking: Boolean = false,
 )
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -66,6 +72,29 @@ class ChatViewModel(
     private var streamJob: Job? = null
 
     val isStreaming: Boolean get() = streamJob?.isActive == true
+
+    /** Cache of model → thinking capability, so /api/show runs once per model. */
+    private val thinkingSupportCache = mutableMapOf<String, Boolean>()
+
+    init {
+        viewModelScope.launch {
+            settingsRepository.settings
+                .map { it.selectedModel to it.isConfigured }
+                .distinctUntilChanged()
+                .collect { (model, configured) ->
+                    if (!configured) return@collect
+                    val cached = thinkingSupportCache[model]
+                    val supported = cached ?: runCatching { chatRepository.modelSupportsThinking(model) }
+                        .getOrDefault(false)
+                        .also { thinkingSupportCache[model] = it }
+                    _uiState.update { it.copy(supportsThinking = supported) }
+                }
+        }
+    }
+
+    fun selectReasoning(level: ReasoningLevel) {
+        viewModelScope.launch { settingsRepository.setReasoning(level) }
+    }
 
     fun selectConversation(id: Long?) {
         if (currentConversationId.value == id) return
@@ -130,13 +159,25 @@ class ChatViewModel(
             }
 
             val received = StringBuilder()
+            val thinkingReceived = StringBuilder()
             try {
-                chatRepository.streamAssistantReply(history).collect { chunk ->
+                chatRepository.streamAssistantReply(
+                    history = history,
+                    modelSupportsThinking = _uiState.value.supportsThinking,
+                ).collect { chunk ->
                     val delta = chunk.message?.content.orEmpty()
-                    if (delta.isNotEmpty()) {
+                    val thinkingDelta = chunk.message?.thinking.orEmpty()
+                    if (delta.isNotEmpty() || thinkingDelta.isNotEmpty()) {
                         received.append(delta)
+                        thinkingReceived.append(thinkingDelta)
                         _uiState.update {
-                            it.copy(streaming = StreamingReply(conversationId, received.toString()))
+                            it.copy(
+                                streaming = StreamingReply(
+                                    conversationId = conversationId,
+                                    content = received.toString(),
+                                    thinking = thinkingReceived.toString(),
+                                )
+                            )
                         }
                     }
                 }
@@ -145,26 +186,29 @@ class ChatViewModel(
                     content = received.toString(),
                     model = model,
                     interrupted = false,
+                    thinking = thinkingReceived.toString(),
                 )
             } catch (e: CancellationException) {
-                if (received.isNotEmpty()) {
+                if (received.isNotEmpty() || thinkingReceived.isNotEmpty()) {
                     withContext(NonCancellable) {
                         chatRepository.saveAssistantMessage(
                             conversationId = conversationId,
                             content = received.toString(),
                             model = model,
                             interrupted = true,
+                            thinking = thinkingReceived.toString(),
                         )
                     }
                 }
                 throw e
             } catch (e: Exception) {
-                if (received.isNotEmpty()) {
+                if (received.isNotEmpty() || thinkingReceived.isNotEmpty()) {
                     chatRepository.saveAssistantMessage(
                         conversationId = conversationId,
                         content = received.toString(),
                         model = model,
                         interrupted = true,
+                        thinking = thinkingReceived.toString(),
                     )
                 }
                 _uiState.update { it.copy(errorMessage = e.message ?: "Something went wrong") }

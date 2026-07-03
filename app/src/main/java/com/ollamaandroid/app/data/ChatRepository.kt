@@ -41,6 +41,7 @@ class ChatRepository(
         content: String,
         model: String,
         interrupted: Boolean,
+        thinking: String? = null,
     ) {
         val now = System.currentTimeMillis()
         chatDao.insertMessage(
@@ -48,6 +49,7 @@ class ChatRepository(
                 conversationId = conversationId,
                 role = "assistant",
                 content = content,
+                thinking = thinking?.takeIf { it.isNotBlank() },
                 model = model,
                 interrupted = interrupted,
                 createdAt = now,
@@ -62,15 +64,27 @@ class ChatRepository(
 
     /**
      * Streams the assistant reply for the given message history using the
-     * currently configured server, key, and model.
+     * currently configured server, key, and model. The reasoning preference is
+     * only sent when the model advertises the `thinking` capability, since
+     * non-thinking models reject the `think` parameter.
      */
-    suspend fun streamAssistantReply(history: List<MessageEntity>): Flow<ChatResponseChunk> {
+    suspend fun streamAssistantReply(
+        history: List<MessageEntity>,
+        modelSupportsThinking: Boolean,
+    ): Flow<ChatResponseChunk> {
         val settings = settingsRepository.settings.first()
         val request = ChatRequest(
             model = settings.selectedModel,
             messages = history.map { ApiChatMessage(role = it.role, content = it.content) },
+            think = if (modelSupportsThinking) settings.reasoning.toThinkValue() else null,
         )
         return client.streamChat(settings.baseUrl, settings.apiKey, request)
+    }
+
+    /** True when the model reports the `thinking` capability via /api/show. */
+    suspend fun modelSupportsThinking(model: String): Boolean {
+        val settings = settingsRepository.settings.first()
+        return client.showModel(settings.baseUrl, settings.apiKey, model).supportsThinking
     }
 
     suspend fun listModels(): List<String> {
